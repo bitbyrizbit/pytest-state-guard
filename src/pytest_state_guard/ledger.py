@@ -377,3 +377,37 @@ class Ledger:
         """Return events relevant to a specific task."""
         with self._lock:
             return [e for e in self._events if e.task_id == task_id]
+
+    def get_owner_snapshot(
+        self, owner_id: str
+    ) -> tuple[OwnerRecord, list[TaskRecord], list[EventRecord]]:
+        """Return a single coherent atomic point-in-time snapshot of an owner, its tasks, and its events.
+
+        All three collections are captured under a single acquisition of the ledger lock,
+        guaranteeing that task and event records correspond to the exact same sequence point.
+        The returned lists are freshly copied collections containing immutable records.
+        """
+        with self._lock:
+            if owner_id not in self._owners:
+                raise EntityNotFoundError(f"Owner '{owner_id}' not found")
+            owner = self._owners[owner_id]
+            tasks = [t for t in self._tasks.values() if t.owner_id == owner_id]
+            events = [e for e in self._events if e.owner_id == owner_id]
+            return owner, list(tasks), list(events)
+
+    def get_finalized_session_snapshot(
+        self,
+    ) -> tuple[list[OwnerRecord], list[TaskRecord], list[EventRecord]]:
+        """Return a single coherent atomic point-in-time snapshot of all finalized owners, tasks, and events.
+
+        All records are captured under a single acquisition of the ledger lock,
+        guaranteeing process-wide consistency across all owners and tasks at that sequence point.
+        The returned lists are freshly copied collections containing immutable records.
+        """
+        with self._lock:
+            finalized_owners = [
+                o for o in self._owners.values() if o.state == OwnerState.FINALIZED
+            ]
+            tasks = list(self._tasks.values())
+            events = list(self._events)
+            return list(finalized_owners), list(tasks), list(events)

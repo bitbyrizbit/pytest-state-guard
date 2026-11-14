@@ -435,3 +435,72 @@ class TestLedgerConcurrency:
                 rf.result()
 
         assert not read_errors
+
+
+class TestLedgerSnapshots:
+    """Tests for coherent atomic point-in-time snapshot methods."""
+
+    def test_get_owner_snapshot_success(self) -> None:
+        ledger = Ledger()
+        owner = ledger.create_owner("owner:1", OwnerType.TEST_CALL, "test_file.py::test_one")
+        task1 = ledger.reserve_task("task:1", "owner:1")
+        ledger.commit_submit_returned("task:1")
+        ledger.commit_callable_started("task:1")
+        ledger.commit_callable_exited("task:1", CallableState.EXITED_RETURNED)
+        finalized_owner = ledger.finalize_owner("owner:1")
+
+        snap_owner, snap_tasks, snap_events = ledger.get_owner_snapshot("owner:1")
+
+        assert snap_owner == finalized_owner
+        assert snap_owner.state == OwnerState.FINALIZED
+        assert len(snap_tasks) == 1
+        assert snap_tasks[0].task_id == "task:1"
+        assert snap_tasks[0].callable_state == CallableState.EXITED_RETURNED
+
+        # Events: OWNER_CREATED, TASK_RESERVED, SUBMIT_RETURNED, CALLABLE_STARTED, CALLABLE_EXITED, OWNER_FINALIZED
+        assert len(snap_events) == 6
+        seq_ids = [e.seq_id for e in snap_events]
+        assert seq_ids == [1, 2, 3, 4, 5, 6]
+
+    def test_get_owner_snapshot_missing_owner_raises(self) -> None:
+        ledger = Ledger()
+        with pytest.raises(EntityNotFoundError):
+            ledger.get_owner_snapshot("owner:missing")
+
+    def test_get_owner_snapshot_isolation(self) -> None:
+        ledger = Ledger()
+        ledger.create_owner("owner:1", OwnerType.TEST_CALL, "test.py::test_iso")
+        ledger.reserve_task("task:1", "owner:1")
+        ledger.finalize_owner("owner:1")
+
+        snap_owner, snap_tasks, snap_events = ledger.get_owner_snapshot("owner:1")
+        assert len(snap_tasks) == 1
+        assert len(snap_events) == 3
+
+        # Subsequent ledger commits must not alter previously returned snapshot
+        ledger.reserve_task("task:2", "owner:1")
+        assert len(snap_tasks) == 1
+        assert len(snap_events) == 3
+
+        # The new snapshot observes the update
+        snap_owner2, snap_tasks2, snap_events2 = ledger.get_owner_snapshot("owner:1")
+        assert len(snap_tasks2) == 2
+        assert len(snap_events2) == 4
+
+    def test_get_finalized_session_snapshot(self) -> None:
+        ledger = Ledger()
+        # Owner 1 is finalized
+        ledger.create_owner("owner:1", OwnerType.TEST_CALL, "test.py::test_1")
+        ledger.reserve_task("task:1", "owner:1")
+        ledger.finalize_owner("owner:1")
+
+        # Owner 2 is still active
+        ledger.create_owner("owner:2", OwnerType.TEST_CALL, "test.py::test_2")
+        ledger.reserve_task("task:2", "owner:2")
+
+        finalized_owners, tasks, events = ledger.get_finalized_session_snapshot()
+
+        assert len(finalized_owners) == 1
+        assert finalized_owners[0].owner_id == "owner:1"
+        assert len(tasks) == 2
+        assert len(events) == 5
