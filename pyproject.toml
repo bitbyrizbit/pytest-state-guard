@@ -18,6 +18,8 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Testing",
 ]
@@ -25,8 +27,15 @@ dependencies = [
     "pytest>=9.1.1",
 ]
 
+[project.urls]
+Repository = "https://github.com/bitbyrizbit/pytest-state-guard"
+Issues = "https://github.com/bitbyrizbit/pytest-state-guard/issues"
+
 [project.entry-points.pytest11]
 state_guard = "pytest_state_guard.plugin"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+pytest_state_guard = ["py.typed"]
