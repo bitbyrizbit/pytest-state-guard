@@ -81,11 +81,17 @@ def test_leak_in_isolated_venv():
 """
         test_file.write_text(test_code, encoding="utf-8")
 
+        # Sanitize child environment so isolated consumer subprocess tests
+        # real automatic entry-point discovery even if parent runner disables autoload
+        child_env = os.environ.copy()
+        child_env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
+
         # Run pytest inside isolated venv WITHOUT -p flag:
         run_res = subprocess.run(
             [str(venv_python), "-m", "pytest", str(test_file)],
             capture_output=True,
             text=True,
+            env=child_env,
         )
         # Must fail with exit code 1 because State Guard was auto-discovered and caught the leak!
         assert run_res.returncode == 1
@@ -97,6 +103,7 @@ def test_leak_in_isolated_venv():
             [str(venv_python), "-m", "pytest", "-p", "no:state_guard", str(test_file)],
             capture_output=True,
             text=True,
+            env=child_env,
         )
         # Must succeed with exit code 0 because State Guard is disabled!
         assert disable_res.returncode == 0
