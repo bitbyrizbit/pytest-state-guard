@@ -192,10 +192,10 @@ pytest -p no:state_guard
 
 - **Python Requirements:** `>= 3.11`
   - *Verified Environments:* Python 3.11.9, Python 3.14.0
-- **Pytest Requirements:** `>= 9.1.1`
+- **Pytest Requirements:** `>= 9.1.1` (direct runtime dependency)
   - *Verified Environments:* pytest 9.1.1, pytest 9.2.0
-- **Pluggy Requirements:** `>= 1.6.0`
-  - *Verified Environments:* pluggy 1.6.0, pluggy 1.7.0
+- **Pluggy Requirements:** `>= 1.5.0` (transitive dependency via pytest)
+  - *Verified Environments:* pluggy 1.5.0, pluggy 1.6.0, pluggy 1.7.0
 
 ---
 
