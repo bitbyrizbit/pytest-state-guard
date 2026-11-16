@@ -13,6 +13,7 @@ def run_pytest(
     test_content: str,
     extra_args: list[str] | None = None,
     conftest_content: str | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Execute pytest in a subprocess with the state_guard plugin active."""
     env = os.environ.copy()
@@ -43,6 +44,7 @@ def run_pytest(
             capture_output=True,
             text=True,
             env=env,
+            timeout=timeout,
         )
 
 
@@ -230,6 +232,7 @@ def test_session_teardown_crash_and_patch_removal_failure_dual_fault():
     6. Terminal summary is NOT falsely reported as a clean/complete audit.
     """
     conftest_code = """
+import sys
 import pytest
 import pytest_state_guard.executor as executor
 import pytest_state_guard.plugin as plugin
@@ -252,16 +255,17 @@ def pytest_unconfigure(config):
     assert "Patch removal failed during interrupted session teardown" in poison_reason
     assert "catastrophic patch removal error" in poison_reason
     assert executor.is_patched() is True
+    sys.stderr.write("\\nSTATE_GUARD_VERIFICATION_SUCCESS\\n")
 """
     test_code = """
 def test_clean_body():
     assert True
 """
     res = run_pytest(test_code, conftest_content=conftest_code)
-    assert res.returncode != 0
-    combined = res.stdout + res.stderr
-    assert "primary upstream session teardown crash" in combined
-    assert "ValueError" in combined
+    assert res.returncode == 1
+    assert "STATE_GUARD_VERIFICATION_SUCCESS" in res.stderr
+    assert "primary upstream session teardown crash" in res.stderr
+    assert "ValueError" in res.stderr
     assert "=== STATE GUARD AUDIT SUMMARY ===" not in res.stdout
 
 
@@ -605,9 +609,11 @@ def test_interrupted_runner_patch_verification_failure_preserves_runner_exceptio
     3. The primary runner exception is preserved in output.
     4. The secondary verification failure is recorded in _POISON_REASON.
     5. Lifecycle is POISONED (no false IDLE).
-    6. Exit code is nonzero.
+    6. Exit code is nonzero (1).
+    7. Verification passes explicitly via success marker.
     """
     conftest_code = """
+import sys
 import pytest
 import pytest_state_guard.executor as executor
 import pytest_state_guard.plugin as plugin
@@ -628,16 +634,17 @@ def pytest_unconfigure(config):
     poison = str(plugin.get_poison_reason())
     assert "Patch verification failed: secondary is_patched verification failure" in poison
     assert plugin.get_active_session() is None
+    sys.stderr.write("\\nSTATE_GUARD_VERIFICATION_SUCCESS\\n")
 """
     test_code = """
 def test_clean():
     assert True
 """
     res = run_pytest(test_code, conftest_content=conftest_code)
-    assert res.returncode != 0
-    combined = res.stdout + res.stderr
-    assert "primary upstream session finish crash" in combined
-    assert "ValueError" in combined
+    assert res.returncode == 1
+    assert "STATE_GUARD_VERIFICATION_SUCCESS" in res.stderr
+    assert "primary upstream session finish crash" in res.stderr
+    assert "ValueError" in res.stderr
     assert "=== STATE GUARD AUDIT SUMMARY ===" not in res.stdout
 
 
@@ -649,9 +656,11 @@ def test_interrupted_runner_clean_cleanup_poisons_lifecycle():
     3. The lifecycle transitions to POISONED (NEVER false IDLE) because the audit was not completed.
     4. _POISON_REASON accurately records that session teardown was interrupted before audit could complete.
     5. The primary runner exception is preserved in output.
-    6. Subprocess exit code is nonzero.
+    6. Subprocess exit code is 1.
+    7. Verification passes explicitly via success marker.
     """
     conftest_code = """
+import sys
 import pytest
 import pytest_state_guard.executor as executor
 import pytest_state_guard.plugin as plugin
@@ -667,16 +676,17 @@ def pytest_unconfigure(config):
     assert "Session teardown interrupted by runner exception before audit could complete: primary upstream runner teardown abort" in poison
     assert plugin.get_active_session() is None
     assert executor.is_patched() is False
+    sys.stderr.write("\\nSTATE_GUARD_VERIFICATION_SUCCESS\\n")
 """
     test_code = """
 def test_clean():
     assert True
 """
     res = run_pytest(test_code, conftest_content=conftest_code)
-    assert res.returncode != 0
-    combined = res.stdout + res.stderr
-    assert "primary upstream runner teardown abort" in combined
-    assert "ValueError" in combined
+    assert res.returncode == 1
+    assert "STATE_GUARD_VERIFICATION_SUCCESS" in res.stderr
+    assert "primary upstream runner teardown abort" in res.stderr
+    assert "ValueError" in res.stderr
     assert "=== STATE GUARD AUDIT SUMMARY ===" not in res.stdout
 
 
@@ -769,3 +779,124 @@ def test_clean():
     combined = res.stdout + res.stderr
     assert "BrokenStrError" in combined
     assert "=== STATE GUARD AUDIT SUMMARY ===" not in res.stdout
+
+
+def test_call_skip_with_running_task_leak():
+    """S6A-004: Verify that a task actively executing when pytest.skip() is invoked
+    is caught at the owner boundary, produces a teardown ERROR, and promotes exit code to 1."""
+    conftest_code = """
+import pytest
+import threading
+
+started_event = threading.Event()
+release_event = threading.Event()
+
+def pytest_unconfigure(config):
+    # Release worker cleanly during session cleanup
+    release_event.set()
+"""
+    test_code = """
+import pytest
+import conftest
+from concurrent.futures import ThreadPoolExecutor
+
+def test_skip_with_leak():
+    executor = ThreadPoolExecutor(max_workers=1)
+    def worker():
+        conftest.started_event.set()
+        conftest.release_event.wait(timeout=30.0)
+    executor.submit(worker)
+    assert conftest.started_event.wait(timeout=5.0), "Worker did not enter execution"
+    pytest.skip("intentional skip while worker is active")
+"""
+    res = run_pytest(
+        test_code,
+        conftest_content=conftest_code,
+        timeout=60.0,
+    )
+    assert res.returncode == 1
+    assert "ERROR at teardown of test_skip_with_leak" in res.stdout
+    assert "State Guard Teardown Violation: TEST_CALL" in res.stdout
+    assert "CALLABLE_NOT_EXITED" in res.stdout
+    assert "1 skipped, 1 error" in res.stdout
+
+
+def test_call_xfail_with_running_task_leak():
+    """S6A-004: Verify that a task actively executing when pytest.xfail() is invoked
+    is caught at the owner boundary, produces a teardown ERROR, and promotes exit code to 1."""
+    conftest_code = """
+import pytest
+import threading
+
+started_event = threading.Event()
+release_event = threading.Event()
+
+def pytest_unconfigure(config):
+    # Release worker cleanly during session cleanup
+    release_event.set()
+"""
+    test_code = """
+import pytest
+import conftest
+from concurrent.futures import ThreadPoolExecutor
+
+def test_xfail_with_leak():
+    executor = ThreadPoolExecutor(max_workers=1)
+    def worker():
+        conftest.started_event.set()
+        conftest.release_event.wait(timeout=30.0)
+    executor.submit(worker)
+    assert conftest.started_event.wait(timeout=5.0), "Worker did not enter execution"
+    pytest.xfail("intentional xfail while worker is active")
+"""
+    res = run_pytest(
+        test_code,
+        conftest_content=conftest_code,
+        timeout=60.0,
+    )
+    assert res.returncode == 1
+    assert "ERROR at teardown of test_xfail_with_leak" in res.stdout
+    assert "State Guard Teardown Violation: TEST_CALL" in res.stdout
+    assert "CALLABLE_NOT_EXITED" in res.stdout
+    assert "1 xfailed, 1 error" in res.stdout
+
+
+def test_call_xfail_marker_with_running_task_leak():
+    """S6A-004: Verify that a task actively executing in a test marked with @pytest.mark.xfail
+    that fails an assertion is caught at teardown, produces ERROR, and promotes exit code to 1."""
+    conftest_code = """
+import pytest
+import threading
+
+started_event = threading.Event()
+release_event = threading.Event()
+
+def pytest_unconfigure(config):
+    # Release worker cleanly during session cleanup
+    release_event.set()
+"""
+    test_code = """
+import pytest
+import conftest
+from concurrent.futures import ThreadPoolExecutor
+
+@pytest.mark.xfail(reason="intentional failing test with leak")
+def test_xfail_marker_with_leak():
+    executor = ThreadPoolExecutor(max_workers=1)
+    def worker():
+        conftest.started_event.set()
+        conftest.release_event.wait(timeout=30.0)
+    executor.submit(worker)
+    assert conftest.started_event.wait(timeout=5.0), "Worker did not enter execution"
+    assert False, "expected failure"
+"""
+    res = run_pytest(
+        test_code,
+        conftest_content=conftest_code,
+        timeout=60.0,
+    )
+    assert res.returncode == 1
+    assert "ERROR at teardown of test_xfail_marker_with_leak" in res.stdout
+    assert "State Guard Teardown Violation: TEST_CALL" in res.stdout
+    assert "CALLABLE_NOT_EXITED" in res.stdout
+    assert "1 xfailed, 1 error" in res.stdout

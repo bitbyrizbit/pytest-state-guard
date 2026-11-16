@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import types
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -482,24 +481,6 @@ def _pytest_sessionfinish_direct(session: pytest.Session, exitstatus: int) -> No
                 raise exc
 
         _evaluate_and_cleanup_session_finish(session, _DirectOutcome(), state)
-
-
-class _PluginModule(types.ModuleType):
-    """Module proxy that returns direct synchronous callable when tests access pytest_sessionfinish directly.
-
-    Pluggy static hook discovery uses inspect.getattr_static(module, name), which reads directly
-    from module.__dict__ and bypasses __getattribute__. It therefore binds the true generator hook
-    implementation at registration time. Ordinary attribute access (used by tests) returns
-    the synchronous direct execution helper without any call-stack or frame inspection.
-    """
-
-    def __getattribute__(self, name: str) -> Any:
-        if name == "pytest_sessionfinish":
-            return super().__getattribute__("_pytest_sessionfinish_direct")
-        return super().__getattribute__(name)
-
-
-sys.modules[__name__].__class__ = _PluginModule
 
 
 @pytest.hookimpl(trylast=True)

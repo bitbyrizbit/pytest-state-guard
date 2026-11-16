@@ -286,7 +286,7 @@ def test_item_two():
         assert fake_session1._state_guard_session is plugin.get_active_session()
         assert not hasattr(fake_session2, "_state_guard_session")
 
-        plugin.pytest_sessionfinish(fake_session1, 0)
+        plugin._pytest_sessionfinish_direct(fake_session1, 0)
         assert plugin.get_lifecycle_state() == plugin.PluginLifecycle.IDLE
 
     def test_preexisting_patch_startup_failure_preserves_patch(self) -> None:
@@ -441,7 +441,7 @@ def test_item_two():
         ThreadPoolExecutor.submit = foreign_wrapper  # type: ignore[method-assign]
 
         # Shutdown
-        plugin.pytest_sessionfinish(fake_session, 0)
+        plugin._pytest_sessionfinish_direct(fake_session, 0)
         assert plugin.get_lifecycle_state() == plugin.PluginLifecycle.IDLE
         assert is_patched() is False
         # Foreign wrapper preserved!
@@ -473,7 +473,7 @@ def test_item_two():
 
         with patch("pytest_state_guard.plugin.remove_patch", side_effect=RuntimeError("removal_injected_error")):
             with pytest.raises(RuntimeError, match="removal_injected_error"):
-                plugin.pytest_sessionfinish(fake_session, 0)
+                plugin._pytest_sessionfinish_direct(fake_session, 0)
 
         assert plugin.get_lifecycle_state() == plugin.PluginLifecycle.POISONED
         assert "Patch removal failed" in str(plugin.get_poison_reason())
@@ -497,7 +497,7 @@ def test_item_two():
 
         with patch.object(plugin, "_ACTIVE_SESSION", faulty._state_guard_session):  # type: ignore[attr-defined]
             with pytest.raises(RuntimeError, match="cleanup_reference_error"):
-                plugin.pytest_sessionfinish(faulty, 0)  # type: ignore[arg-type]
+                plugin._pytest_sessionfinish_direct(faulty, 0)  # type: ignore[arg-type]
 
         assert plugin.get_lifecycle_state() == plugin.PluginLifecycle.POISONED
         assert "Session reference cleanup failed" in str(plugin.get_poison_reason())
@@ -555,5 +555,120 @@ def test_single_owner():
             assert plugin._get_verified_session(fake_session) is None
 
         # Clean shutdown
-        plugin.pytest_sessionfinish(fake_session, 0)
+        plugin._pytest_sessionfinish_direct(fake_session, 0)
         assert plugin.get_lifecycle_state() == plugin.PluginLifecycle.IDLE
+
+    def test_sequential_uncleaned_sessions_in_same_process(self) -> None:
+        """Verify that two sequential pytest sessions in the exact same Python process
+        both initialize, run tests, audit, and clean up to IDLE without manual resets."""
+        import subprocess
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        src_dir = str(repo_root / "src")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            test1_path = tmp_path / "test_1.py"
+            test1_path.write_text(
+                "def test_first():\n"
+                "    import pytest_state_guard.plugin as plugin\n"
+                "    import pytest_state_guard.executor as executor\n"
+                "    from concurrent.futures import ThreadPoolExecutor\n"
+                "    assert plugin.get_lifecycle_state() == plugin.PluginLifecycle.ACTIVE, 'Session 1 not ACTIVE during test execution'\n"
+                "    assert plugin.get_active_session() is not None, 'Session 1 active session is None during test execution'\n"
+                "    assert executor.is_patched() is True, 'Session 1 executor is not patched during test execution'\n"
+                "    with ThreadPoolExecutor(max_workers=1) as ex:\n"
+                "        fut = ex.submit(lambda: 'payload1')\n"
+                "        assert fut.result() == 'payload1'\n",
+                encoding="utf-8",
+            )
+            test2_path = tmp_path / "test_2.py"
+            test2_path.write_text(
+                "def test_second():\n"
+                "    import pytest_state_guard.plugin as plugin\n"
+                "    import pytest_state_guard.executor as executor\n"
+                "    from concurrent.futures import ThreadPoolExecutor\n"
+                "    assert plugin.get_lifecycle_state() == plugin.PluginLifecycle.ACTIVE, 'Session 2 not ACTIVE during test execution'\n"
+                "    assert plugin.get_active_session() is not None, 'Session 2 active session is None during test execution'\n"
+                "    assert executor.is_patched() is True, 'Session 2 executor is not patched during test execution'\n"
+                "    with ThreadPoolExecutor(max_workers=1) as ex:\n"
+                "        fut = ex.submit(lambda: 'payload2')\n"
+                "        assert fut.result() == 'payload2'\n",
+                encoding="utf-8",
+            )
+
+            script = f"""
+import sys
+import pytest
+import pytest_state_guard.plugin as plugin
+import pytest_state_guard.executor as executor
+
+# Session 1: Clean test pass with State Guard
+ret1 = pytest.main(["-q", "-p", "pytest_state_guard.plugin", r"{test1_path}"])
+assert ret1 == 0, f"Session 1 failed with exit code {{ret1}}"
+assert plugin.get_lifecycle_state() == plugin.PluginLifecycle.IDLE, "Session 1 did not reach IDLE"
+assert plugin.get_active_session() is None, "Session 1 did not clear active session"
+assert executor.is_patched() is False, "Session 1 did not remove patch"
+findings1 = plugin.get_last_session_findings()
+assert findings1 is not None, "Session 1 did not populate findings"
+
+ledger1 = plugin.get_last_session_ledger()
+assert ledger1 is not None, "Session 1 did not record ledger"
+owners1, tasks1, events1 = ledger1.get_finalized_session_snapshot()
+
+# Verify non-empty evidence in Session 1 (non-vacuous verification)
+assert len(owners1) > 0, "Session 1 owners snapshot is unexpectedly empty"
+assert len(tasks1) > 0, "Session 1 tasks snapshot is unexpectedly empty"
+assert len(events1) > 0, "Session 1 events snapshot is unexpectedly empty"
+
+s1_owner_ids = {{o.owner_id for o in owners1}}
+s1_task_ids = {{t.task_id for t in tasks1}}
+s1_event_owner_ids = {{e.owner_id for e in events1}}
+s1_event_task_ids = {{e.task_id for e in events1 if e.task_id is not None}}
+assert set(findings1.keys()) == s1_owner_ids, "Session 1 findings keys do not match snapshot owners"
+
+# Session 2: Second independent test in same process without resetting plugin globals
+ret2 = pytest.main(["-q", "-p", "pytest_state_guard.plugin", r"{test2_path}"])
+assert ret2 == 0, f"Session 2 failed with exit code {{ret2}}"
+assert plugin.get_lifecycle_state() == plugin.PluginLifecycle.IDLE, "Session 2 did not reach IDLE"
+assert plugin.get_active_session() is None, "Session 2 did not clear active session"
+assert executor.is_patched() is False, "Session 2 did not remove patch"
+findings2 = plugin.get_last_session_findings()
+assert findings2 is not None, "Session 2 did not populate findings"
+
+ledger2 = plugin.get_last_session_ledger()
+assert ledger2 is not None, "Session 2 did not record ledger"
+assert ledger2 is not ledger1, "Session 2 reused Session 1 ledger instance"
+owners2, tasks2, events2 = ledger2.get_finalized_session_snapshot()
+
+# Verify non-empty evidence in Session 2 (non-vacuous verification)
+assert len(owners2) > 0, "Session 2 owners snapshot is unexpectedly empty"
+assert len(tasks2) > 0, "Session 2 tasks snapshot is unexpectedly empty"
+assert len(events2) > 0, "Session 2 events snapshot is unexpectedly empty"
+
+s2_owner_ids = {{o.owner_id for o in owners2}}
+s2_task_ids = {{t.task_id for t in tasks2}}
+s2_event_owner_ids = {{e.owner_id for e in events2}}
+s2_event_task_ids = {{e.task_id for e in events2 if e.task_id is not None}}
+assert set(findings2.keys()) == s2_owner_ids, "Session 2 findings keys do not match snapshot owners"
+
+# 1. Owner IDs are disjoint across sessions
+assert s1_owner_ids.isdisjoint(s2_owner_ids), f"Cross-session owner leakage detected: {{s1_owner_ids & s2_owner_ids}}"
+
+# 2. Task IDs are disjoint across sessions
+assert s1_task_ids.isdisjoint(s2_task_ids), f"Cross-session task leakage detected: {{s1_task_ids & s2_task_ids}}"
+
+# 3. Event records from Session 2 contain no owner or task references originating in Session 1
+assert s1_owner_ids.isdisjoint(s2_event_owner_ids), f"Session 2 events reference Session 1 owners: {{s1_owner_ids & s2_event_owner_ids}}"
+assert s1_task_ids.isdisjoint(s2_event_task_ids), f"Session 2 events reference Session 1 tasks: {{s1_task_ids & s2_event_task_ids}}"
+
+sys.stderr.write("\\nSEQUENTIAL_SESSIONS_VERIFIED\\n")
+"""
+            env = os.environ.copy()
+            existing_pp = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = f"{src_dir}{os.pathsep}{existing_pp}" if existing_pp else src_dir
+
+            res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=60.0)
+            assert res.returncode == 0, f"Sequential sessions failed:\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
+            assert "SEQUENTIAL_SESSIONS_VERIFIED" in res.stderr
