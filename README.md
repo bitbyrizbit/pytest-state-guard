@@ -167,7 +167,19 @@ def test_background_worker_fixed():
 
 ## Installation & Plugin Discovery
 
-During development and prior to PyPI release, install State Guard from your local repository root or from a pre-built wheel:
+### Public Release (PyPI)
+
+Following initial release publication to PyPI:
+
+```bash
+pip install pytest-state-guard
+```
+
+*(Note: Prior to the initial release publication on PyPI, use the local development installation below.)*
+
+### Local / Development Installation
+
+During development and local validation prior to public release, install State Guard from your local repository root or from a pre-built wheel:
 
 ```bash
 # Install from local repository root:
@@ -177,9 +189,12 @@ pip install .
 pip install dist/pytest_state_guard-0.1.0-py3-none-any.whl
 ```
 
+### Automatic Discovery
+
 Once installed, State Guard is automatically discovered by pytest via its standard `pytest11` entry point (`state_guard = "pytest_state_guard.plugin"`).
 
 ### Disabling the Plugin
+
 To temporarily deactivate State Guard for a specific test run without uninstalling it:
 
 ```bash

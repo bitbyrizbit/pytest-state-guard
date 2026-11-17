@@ -1,0 +1,255 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build-and-validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "setuptools>=77.0" build twine
+
+      - name: Validate Git tag matches package version and commit
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          PKG_VERSION=$(python -c "import sys; sys.path.insert(0, 'src'); import pytest_state_guard; print(pytest_state_guard.__version__)")
+          EXPECTED_TAG="v${PKG_VERSION}"
+          echo "Triggered tag:   ${TAG_NAME}"
+          echo "Package version: ${PKG_VERSION}"
+          echo "Expected tag:    ${EXPECTED_TAG}"
+          if [ "${TAG_NAME}" != "${EXPECTED_TAG}" ]; then
+            echo "ERROR: Git tag '${TAG_NAME}' does not match expected '${EXPECTED_TAG}'"
+            exit 1
+          fi
+
+          TAG_COMMIT=$(git rev-parse "refs/tags/${TAG_NAME}^{commit}")
+          HEAD_COMMIT=$(git rev-parse HEAD)
+          echo "Tag commit:  ${TAG_COMMIT}"
+          echo "HEAD commit: ${HEAD_COMMIT}"
+          if [ "${TAG_COMMIT}" != "${HEAD_COMMIT}" ]; then
+            echo "ERROR: Tag '${TAG_NAME}' (${TAG_COMMIT}) does not point to checked-out commit (${HEAD_COMMIT})"
+            exit 1
+          fi
+          echo "Tag, package version, and commit resolved successfully."
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Validate distributions with Twine
+        run: python -m twine check dist/*
+
+      - name: Inspect distribution contents and metadata
+        run: |
+          python -c '
+          import glob, tarfile, zipfile, sys
+
+          wheels = glob.glob("dist/*.whl")
+          sdists = glob.glob("dist/*.tar.gz")
+          if len(wheels) != 1 or len(sdists) != 1:
+              sys.exit(f"Expected 1 wheel and 1 sdist, found {len(wheels)} wheels and {len(sdists)} sdists")
+
+          whl = wheels[0]
+          with zipfile.ZipFile(whl, "r") as z:
+              names = set(z.namelist())
+              assert "pytest_state_guard/py.typed" in names, "py.typed missing from wheel"
+              assert "pytest_state_guard-0.1.0.dist-info/entry_points.txt" in names or any(n.endswith("entry_points.txt") for n in names), "entry_points.txt missing from wheel"
+              ep_content = [z.read(n).decode("utf-8") for n in names if n.endswith("entry_points.txt")][0]
+              assert "pytest11" in ep_content and "state_guard" in ep_content, "pytest11 entry point missing from wheel"
+              print("Wheel contents and entry point validated.")
+
+          sdist = sdists[0]
+          with tarfile.open(sdist, "r:gz") as t:
+              s_names = set(t.getnames())
+              assert any(n.endswith("LICENSE") for n in s_names), "LICENSE missing from sdist"
+              assert any(n.endswith("README.md") for n in s_names), "README.md missing from sdist"
+              assert any(n.endswith("py.typed") for n in s_names), "py.typed missing from sdist"
+              print("Sdist contents validated.")
+          '
+
+      - name: Generate SHA-256 checksum manifest
+        run: |
+          cd dist
+          sha256sum *.whl *.tar.gz > SHA256SUMS
+          echo "Generated SHA256SUMS:"
+          cat SHA256SUMS
+          cd ..
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: publish-testpypi
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/pytest-state-guard
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Verify artifact SHA-256 checksums
+        run: |
+          cd dist
+          echo "Verifying SHA256 checksums before TestPyPI upload:"
+          sha256sum -c SHA256SUMS
+          rm SHA256SUMS
+          cd ..
+
+      - name: Publish distribution to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  verify-testpypi:
+    name: verify-testpypi-staging
+    needs: [publish-testpypi]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install and verify package from TestPyPI in clean environment
+        run: |
+          python -m pip install --upgrade pip
+
+          # Step 1: Create isolated virtualenv outside workspace
+          VENV_DIR="/tmp/testpypi_consumer_venv"
+          python -m venv "${VENV_DIR}"
+          VENV_PY="${VENV_DIR}/bin/python"
+
+          # Step 2: Install pytest from standard PyPI
+          "${VENV_PY}" -m pip install pytest
+
+          # Step 3: Install exact pytest-state-guard from TestPyPI with bounded retry
+          PKG_VERSION="${GITHUB_REF_NAME#v}"
+          echo "Target package version: ${PKG_VERSION}"
+
+          MAX_ATTEMPTS=12
+          SLEEP_INTERVAL=10
+          ATTEMPT=1
+          INSTALLED=false
+
+          echo "Waiting for TestPyPI index propagation and installing pytest-state-guard==${PKG_VERSION}..."
+
+          while [ ${ATTEMPT} -le ${MAX_ATTEMPTS} ]; do
+            echo "Attempt ${ATTEMPT} of ${MAX_ATTEMPTS}: trying pip install from TestPyPI..."
+            if "${VENV_PY}" -m pip install \
+                 --index-url https://test.pypi.org/simple/ \
+                 --no-deps \
+                 "pytest-state-guard==${PKG_VERSION}"; then
+              INSTALLED=true
+              echo "Successfully installed pytest-state-guard==${PKG_VERSION} from TestPyPI on attempt ${ATTEMPT}."
+              break
+            fi
+            echo "Package not yet ready on TestPyPI. Sleeping ${SLEEP_INTERVAL}s before retry..."
+            sleep ${SLEEP_INTERVAL}
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [ "${INSTALLED}" != "true" ]; then
+            echo "ERROR: Timed out waiting for pytest-state-guard==${PKG_VERSION} on TestPyPI after $((MAX_ATTEMPTS * SLEEP_INTERVAL))s."
+            exit 1
+          fi
+
+          # Step 4: Verify installed version and import location
+          "${VENV_PY}" -c "
+          import pytest_state_guard
+          print('Imported from:', pytest_state_guard.__file__)
+          assert pytest_state_guard.__version__ == '${PKG_VERSION}', f'Version mismatch: {pytest_state_guard.__version__}'
+          assert 'testpypi_consumer_venv' in pytest_state_guard.__file__, 'Not imported from consumer venv site-packages'
+          "
+
+          # Step 5: Execute consumer smoke test verifying auto-discovery and violation detection
+          SMOKE_DIR="/tmp/testpypi_smoke_test"
+          mkdir -p "${SMOKE_DIR}"
+
+          cat << 'EOF' > "${SMOKE_DIR}/test_consumer.py"
+          import threading
+          from concurrent.futures import ThreadPoolExecutor
+
+          def test_clean_task():
+              with ThreadPoolExecutor(max_workers=1) as ex:
+                  fut = ex.submit(lambda: "ok")
+                  assert fut.result() == "ok"
+
+          def test_leaked_task():
+              evt = threading.Event()
+              ex = ThreadPoolExecutor(max_workers=1)
+              ex.submit(lambda: evt.wait(timeout=5))
+          EOF
+
+          # Verify auto-discovery without -p: clean test passes, leak fails with exit code 1
+          "${VENV_PY}" -m pytest "${SMOKE_DIR}/test_consumer.py::test_clean_task"
+          
+          set +e
+          "${VENV_PY}" -m pytest "${SMOKE_DIR}/test_consumer.py::test_leaked_task"
+          LEAK_EXIT=$?
+          set -e
+          if [ "${LEAK_EXIT}" -ne 1 ]; then
+            echo "ERROR: Expected exit code 1 for leaked task under auto-discovery, got ${LEAK_EXIT}"
+            exit 1
+          fi
+          echo "Automatic discovery and teardown violation verified on TestPyPI distribution."
+
+          # Verify native plugin deactivation via -p no:state_guard
+          "${VENV_PY}" -m pytest -p no:state_guard "${SMOKE_DIR}/test_consumer.py::test_leaked_task"
+          echo "Native deactivation verified on TestPyPI distribution."
+
+  publish-pypi:
+    name: publish-pypi-production
+    needs: [verify-testpypi]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pytest-state-guard
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Verify artifact SHA-256 checksums
+        run: |
+          cd dist
+          echo "Verifying SHA256 checksums before production PyPI upload:"
+          sha256sum -c SHA256SUMS
+          rm SHA256SUMS
+          cd ..
+
+      - name: Publish distribution to production PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
