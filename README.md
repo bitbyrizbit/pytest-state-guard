@@ -86,7 +86,7 @@ Running `pytest` against this test demonstrates how State Guard surfaces the bou
 ```text
 ============================= test session starts =============================
 platform ... -- Python 3.x, pytest-9.x, pluggy-1.x
-plugins: state-guard-0.1.0
+plugins: state-guard-0.1.1
 collected 1 item
 
 test_demo.py::test_background_worker PASSED                              [100%]
