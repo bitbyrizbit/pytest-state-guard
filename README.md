@@ -1,8 +1,39 @@
 # pytest-state-guard
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![PyPI version](https://img.shields.io/pypi/v/pytest-state-guard.svg)](https://pypi.org/project/pytest-state-guard/)
+[![CI](https://github.com/bitbyrizbit/pytest-state-guard/actions/workflows/ci.yml/badge.svg?branch=feat/state-guard-v1)](https://github.com/bitbyrizbit/pytest-state-guard/actions/workflows/ci.yml)
+[![Python Versions](https://img.shields.io/pypi/pyversions/pytest-state-guard.svg)](https://pypi.org/project/pytest-state-guard/)
+[![License: MIT](https://img.shields.io/pypi/l/pytest-state-guard.svg)](https://github.com/bitbyrizbit/pytest-state-guard/blob/feat/state-guard-v1/LICENSE)
 
 A pytest plugin auditing `ThreadPoolExecutor` task lifetimes against fixture and test owner boundaries.
+
+---
+
+## Installation & Quickstart
+
+Install State Guard into your pytest test environment from PyPI:
+
+```bash
+pip install pytest-state-guard
+```
+
+### Automatic Discovery
+
+Once installed, State Guard is automatically discovered by pytest via its standard `pytest11` entry point (`state_guard = "pytest_state_guard.plugin"`). No `conftest.py` edits, fixtures, or command-line flags are required.
+
+Run your test suite normally:
+
+```bash
+pytest
+```
+
+### Deactivating State Guard
+
+To temporarily deactivate State Guard for a specific test run without uninstalling it:
+
+```bash
+pytest -p no:state_guard
+```
 
 ---
 
@@ -15,6 +46,88 @@ Depending on operating system scheduling, the submitted callable may have comple
 Consider an illustrative scenario: a test submits background work and exits cleanly in mere milliseconds. Several tests later, an intermittent flake occurs because an orphaned thread from that earlier test was still executing and wrote into shared memory.
 
 `pytest-state-guard` identifies this lifecycle mismatch. It instruments `ThreadPoolExecutor.submit` to capture task provenance, records observed lifecycle transitions into an append-only event ledger with monotonic sequence numbers, and evaluates task lifetimes against owner finalization boundaries using a formal policy engine.
+
+---
+
+## Usage Example
+
+### A Leaky Test
+
+The following test submits work to a `ThreadPoolExecutor` and synchronizes on callable startup to confirm the worker has begun executing before the test call completes:
+
+```python
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+started = threading.Event()
+stop_event = threading.Event()
+
+def background_work():
+    started.set()
+    stop_event.wait(timeout=2.0)
+
+def test_background_worker():
+    executor = ThreadPoolExecutor(max_workers=1)
+    executor.submit(background_work)
+
+    # Synchronize: confirm the worker callable has started execution
+    assert started.wait(timeout=1.0)
+
+    # Test assertions pass, but the worker is still running across teardown:
+    assert True
+```
+
+*(Note: The synchronization event confirms callable startup. The bounded wait keeps the callable active long enough to demonstrate the intended lifecycle violation under the observed execution; arbitrary operating system scheduling can still affect the outcome. This example deliberately demonstrates an unjoined background worker to illustrate State Guard's detection; unjoined background execution is an anti-pattern for production test suites.)*
+
+### Representative Terminal Output
+
+Running `pytest` against this test demonstrates how State Guard surfaces the boundary violation during test teardown without masking call-phase assertions:
+
+```text
+============================= test session starts =============================
+platform ... -- Python 3.x, pytest-9.x, pluggy-1.x
+plugins: state-guard-0.1.0
+collected 1 item
+
+test_demo.py::test_background_worker PASSED                              [100%]
+test_demo.py::test_background_worker ERROR                               [100%]
+
+=================================== ERRORS ====================================
+_________________ ERROR at teardown of test_background_worker _________________
+
+- State Guard Teardown Violation: TEST_CALL [test_demo.py::test_background_worker] -
+Owner ID: owner:test:test_demo.py::test_background_worker:<owner_uuid>
+Owner Finalized Sequence: 7 (created at seq 2)
+
+  * Finding: finding:owner:test:test_demo.py::test_background_worker:<owner_uuid>:task:<task_uuid>
+    Classification: CALLABLE_NOT_EXITED
+    Task ID:        task:<task_uuid>
+    Evidence:       Task 'task:<task_uuid>' callable began execution at seq 4 before finalization, but has not committed an exit event.
+    Sequences:      3, 4, 7
+
+=================== State Guard Audit: VIOLATIONS DETECTED ====================
+Owner: TEST_CALL [test_demo.py::test_background_worker]
+  - [CALLABLE_NOT_EXITED] Task 'task:<task_uuid>': Task 'task:<task_uuid>' callable began execution at seq 4 before finalization, but has not committed an exit event.
+    Sequences: 3, 4, 7
+
+=========================== short test summary info ===========================
+ERROR test_demo.py::test_background_worker
+========================= 1 passed, 1 error in 0.80s ==========================
+```
+
+### The Fix
+
+To ensure clean teardown, wrap executor usage in a context manager or explicitly wait for submitted futures within the owner scope:
+
+```python
+def test_background_worker_fixed():
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(lambda: 42)
+        assert future.result() == 42
+    # The context manager exit automatically invokes executor.shutdown(wait=True),
+    # waiting for submitted callables to finish executing before the test owner finalization boundary.
+    # (Note: shutdown(wait=True) waits for work to complete; it does not forcibly cancel or terminate running threads.)
+```
 
 ---
 
@@ -101,112 +214,10 @@ If all test assertions passed but State Guard detected concurrency violations, t
 
 ---
 
-## Usage Example
-
-### An Illustrative Leaky Test
-The following test submits work to a `ThreadPoolExecutor` and uses synchronization to guarantee that the worker callable has started before the test call finishes. In the illustrated execution, this demonstrates a worker remaining active across the owner finalization boundary.
-
-*(Note: The bounded timeout on `release.wait(timeout=2.0)` ensures that worker threads safely terminate without hanging the test process, but it also means that under arbitrary operating system scheduling—such as thread suspension—this specific outcome is not guaranteed. This example deliberately demonstrates an unjoined background worker to illustrate State Guard's detection; it is an anti-pattern for production test suites.)*
-
-```python
-import threading
-from concurrent.futures import ThreadPoolExecutor
-
-started = threading.Event()
-release = threading.Event()
-
-def worker():
-    started.set()
-    # Bounded wait allows the thread to safely terminate if release is never set:
-    release.wait(timeout=2.0)
-
-def test_background_worker():
-    executor = ThreadPoolExecutor(max_workers=1)
-    executor.submit(worker)
-
-    # Synchronize: guarantee the worker callable has started execution
-    assert started.wait(timeout=1.0), "Worker failed to start"
-
-    # The test passes assertions, but the worker is still active:
-    assert True
-```
-
-### Pytest Output (Illustrative)
-Because physical thread scheduling is non-deterministic, the sample output below represents one possible illustrative execution. If scheduling delays the test thread until the worker timeout expires, an alternate classification (such as `COMPLETED_BEFORE_FINALIZATION`) could be observed instead. Total process duration may reflect background workers concluding before process exit.
-
-```text
-==================================== ERRORS ====================================
-_______________________ ERROR at teardown of test_background_worker _______________________
----------------- State Guard Teardown Violation: TEST_CALL [test_demo.py::test_background_worker] ----------------
-Owner ID: 3b9a1c4e-6e8d-4f1a-b2c3-9d8e7f6a5b4c
-Owner Finalized Sequence: 42 (created at seq 38)
-
-  * Finding: f-3b9a1c4e-001
-    Classification: CALLABLE_NOT_EXITED
-    Task ID:        t-8a7b6c5d-1122-3344
-    Evidence:       Callable started at seq 40 but did not exit before owner finalization (seq 42).
-    Sequences:      40, 42
-
-=========================== short test summary info ============================
-ERROR test_demo.py::test_background_worker - State Guard Teardown Violation: TEST_CALL
-============================== 1 error in 0.12s ===============================
-```
-
-### The Fix
-To prevent task leakage, ensure executors are joined or futures are waited on within the owner's scope:
-
-```python
-def test_background_worker_fixed():
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(lambda: 42)
-        assert future.result() == 42
-    # Context manager exit shuts down the executor and joins worker threads
-```
-
----
-
-## Installation & Plugin Discovery
-
-### Public Release (PyPI)
-
-Following initial release publication to PyPI:
-
-```bash
-pip install pytest-state-guard
-```
-
-*(Note: Prior to the initial release publication on PyPI, use the local development installation below.)*
-
-### Local / Development Installation
-
-During development and local validation prior to public release, install State Guard from your local repository root or from a pre-built wheel:
-
-```bash
-# Install from local repository root:
-pip install .
-
-# Or install from a previously built wheel:
-pip install dist/pytest_state_guard-0.1.0-py3-none-any.whl
-```
-
-### Automatic Discovery
-
-Once installed, State Guard is automatically discovered by pytest via its standard `pytest11` entry point (`state_guard = "pytest_state_guard.plugin"`).
-
-### Disabling the Plugin
-
-To temporarily deactivate State Guard for a specific test run without uninstalling it:
-
-```bash
-pytest -p no:state_guard
-```
-
----
-
 ## Compatibility & Verification
 
 - **Python Requirements:** `>= 3.11`
-  - *Verified Environments:* Python 3.11.9, Python 3.14.0
+  - *Verified Matrix Environments:* Python 3.11, Python 3.12, Python 3.13, and Python 3.14 across Ubuntu (Linux), Windows, and macOS (verified in [CI Run 44079270152](https://github.com/bitbyrizbit/pytest-state-guard/actions/runs/44079270152))
 - **Pytest Requirements:** `>= 9.1.1` (direct runtime dependency)
   - *Verified Environments:* pytest 9.1.1, pytest 9.2.0
 - **Pluggy Requirements:** `>= 1.5.0` (transitive dependency via pytest)
@@ -214,9 +225,17 @@ pytest -p no:state_guard
 
 ---
 
+## Scope & Limitations
+
+- **ThreadPoolExecutor Exclusivity:** Only `concurrent.futures.ThreadPoolExecutor` is instrumented. Custom worker implementations relying on `threading.Thread` directly are uninstrumented.
+- **Process Boundaries:** Each pytest process maintains its own independent in-memory ledger. Cross-process ledger aggregation and distributed ownership correlation (such as across `pytest-xdist` worker processes) are not provided.
+- **Audit, Not Intervention:** State Guard reports concurrency boundary violations; it does not alter thread execution, terminate running threads, or enforce shutdown.
+
+---
+
 ## Development & Test Suite
 
-To run the complete test suite across adversarial, unit, and lifecycle integration tests:
+To run the complete test suite across adversarial, unit, and lifecycle integration tests from a local checkout:
 
 **PowerShell:**
 ```powershell
@@ -233,16 +252,8 @@ pytest
 To build a standalone distribution wheel:
 
 ```bash
-pip wheel . --no-deps -w dist/
+python -m build
 ```
-
----
-
-## Scope & Limitations
-
-- **ThreadPoolExecutor Exclusivity:** Only `concurrent.futures.ThreadPoolExecutor` is instrumented. Custom worker implementations relying on `threading.Thread` directly are uninstrumented.
-- **Process Boundaries:** Each pytest process maintains its own independent in-memory ledger. Cross-process ledger aggregation and distributed ownership correlation (such as across `pytest-xdist` worker processes) are not provided.
-- **Audit, Not Intervention:** State Guard reports concurrency boundary violations; it does not alter thread execution, terminate running threads, or enforce shutdown.
 
 ---
 
