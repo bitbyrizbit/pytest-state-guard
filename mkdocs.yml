@@ -1,0 +1,53 @@
+site_name: pytest-state-guard
+site_description: Deterministic ThreadPoolExecutor task lifetime auditor for pytest
+site_url: https://bitbyrizbit.github.io/pytest-state-guard/
+repo_url: https://github.com/bitbyrizbit/pytest-state-guard
+repo_name: bitbyrizbit/pytest-state-guard
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path:
+        - "."
+      check_paths: true
+  - pymdownx.superfences
+  - tables
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - User Guide:
+      - Test & Fixture Usage: user-guide/test-and-fixture-usage.md
+      - Classifications & Severities: user-guide/classifications.md
+      - Troubleshooting: user-guide/troubleshooting.md
+  - Architecture:
+      - Ownership & Lifecycle: architecture/ownership-and-lifecycle.md
+      - Concurrency & Interception Model: architecture/concurrency-model.md
+      - Reporting & Pytest Integration: architecture/reporting.md
+  - Development: development.md
+  - Release History: changelog.md
+  - Contributing: contributing.md
