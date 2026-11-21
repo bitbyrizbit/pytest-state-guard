@@ -42,13 +42,21 @@ def test_uses_fixture(sample_fixture):
         assert ledger is not None
 
         fixture_owners = [
-            o for o in ledger.get_all_owners() if o.fixture_name == "sample_fixture"
+            o for o in ledger.get_all_owners()
+            if o.fixture_name == "sample_fixture" and o.owner_type == OwnerType.FIXTURE_SETUP
         ]
         assert len(fixture_owners) == 1
         owner = fixture_owners[0]
         assert owner.owner_type == OwnerType.FIXTURE_SETUP
         assert owner.state == OwnerState.FINALIZED
         assert owner.finalized_seq is not None
+
+        teardown_owners = [
+            o for o in ledger.get_all_owners()
+            if o.fixture_name == "sample_fixture" and o.owner_type == OwnerType.FIXTURE_TEARDOWN
+        ]
+        assert len(teardown_owners) == 1
+        assert teardown_owners[0].state == OwnerState.FINALIZED
 
         tasks = ledger.get_tasks_for_owner(owner.owner_id)
         assert len(tasks) == 1
@@ -186,13 +194,20 @@ def test_gen(gen_fixture):
         ledger = plugin.get_last_session_ledger()
         assert ledger is not None
 
-        owner = next(o for o in ledger.get_all_owners() if o.fixture_name == "gen_fixture")
+        owner = next(
+            o for o in ledger.get_all_owners()
+            if o.fixture_name == "gen_fixture" and o.owner_type == OwnerType.FIXTURE_SETUP
+        )
         tasks = ledger.get_tasks_for_owner(owner.owner_id)
-
-        # Only the setup task is tracked under the owner
         assert len(tasks) == 1
-        # Total tracked tasks in the entire ledger is 1 (teardown task was unowned)
-        assert len(ledger.get_all_tasks()) == 1
+
+        teardown_owner = next(
+            o for o in ledger.get_all_owners()
+            if o.fixture_name == "gen_fixture" and o.owner_type == OwnerType.FIXTURE_TEARDOWN
+        )
+        teardown_tasks = ledger.get_tasks_for_owner(teardown_owner.owner_id)
+        assert len(teardown_tasks) == 1
+        assert len(ledger.get_all_tasks()) == 2
 
     def test_module_scoped_fixture_lifecycle(self) -> None:
         """Verifies module-scoped fixture remains active across multiple tests and finalizes at module teardown."""
@@ -299,7 +314,8 @@ def test_param_consumer(param_fixture):
         assert ledger is not None
 
         param_owners = [
-            o for o in ledger.get_all_owners() if o.fixture_name == "param_fixture"
+            o for o in ledger.get_all_owners()
+            if o.fixture_name == "param_fixture" and o.owner_type == OwnerType.FIXTURE_SETUP
         ]
         assert len(param_owners) == 2
         assert param_owners[0].owner_id != param_owners[1].owner_id

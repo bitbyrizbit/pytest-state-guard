@@ -63,6 +63,7 @@ class OwnerType(str, Enum):
 
     FIXTURE_SETUP = "FIXTURE_SETUP"
     TEST_CALL = "TEST_CALL"
+    FIXTURE_TEARDOWN = "FIXTURE_TEARDOWN"
 
 
 class OwnerState(str, Enum):

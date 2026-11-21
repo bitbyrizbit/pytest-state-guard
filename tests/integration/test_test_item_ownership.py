@@ -226,8 +226,13 @@ def test_has_teardown_submission(teardown_submit_fixture):
 
         # Only the call_task was tracked under the test owner
         assert len(tasks) == 1
-        # Total tracked tasks in ledger is 1 (the teardown submission was untracked pass-through)
-        assert len(ledger.get_all_tasks()) == 1
+        # The teardown submission is tracked under the fixture teardown owner
+        td_owner = next(
+            o for o in ledger.get_all_owners() if o.owner_type == OwnerType.FIXTURE_TEARDOWN
+        )
+        td_tasks = ledger.get_tasks_for_owner(td_owner.owner_id)
+        assert len(td_tasks) == 1
+        assert len(ledger.get_all_tasks()) == 2
 
     def test_multi_test_isolation(self) -> None:
         """Verifies tasks submitted in Test 1 are not attributed to Test 2."""
