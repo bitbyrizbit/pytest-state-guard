@@ -22,11 +22,12 @@ These unjoined tasks cause subtle, non-deterministic bugs:
 ### 1. The Submitter Owns the Task
 Executors are often long-lived, shared resources configured across multiple fixtures or tests. An executor is merely an execution mechanism; the entity responsible for a task's existence and bounded lifetime is the **submitter**.
 
-State Guard tracks two distinct lifecycle owner scopes:
-- **Test Call Owners (`TEST_CALL`):** Bound to the test item during its `pytest_runtest_call` execution and finalized at test teardown. Tasks submitted during the test body belong to this owner.
+State Guard tracks three distinct lifecycle owner scopes:
+- **Test Call Owners (`TEST_CALL`):** Bound to the test item during its `pytest_runtest_call` execution and finalized in `pytest_runtest_teardown`. Tasks submitted during the test body belong to this owner.
 - **Fixture Setup Owners (`FIXTURE_SETUP`):** Bound to fixture invocations during `pytest_fixture_setup` across all fixture scopes (`function`, `class`, `module`, `package`, `session`), and finalized through `pytest_fixture_post_finalizer` after fixture teardown logic completes.
+- **Fixture Teardown Owners (`FIXTURE_TEARDOWN`):** Bound to fixture finalizer and post-yield execution intercepted via the `FixtureDef.finish` dispatcher, and finalized upon teardown conclusion.
 
-> **Important Lifecycle Boundary:** Fixture teardown and finalizer execution do not have a fixture-setup owner. State Guard does not attribute submissions during teardown to the completed fixture-setup owner.
+> **Important Lifecycle Boundary:** Fixture teardown and finalizer execution do not belong to the completed fixture-setup owner; they are audited under their own dedicated `FIXTURE_TEARDOWN` owner. State Guard verifies that teardown dispatch is not bypassed by non-delegating plugins (SCEN-10).
 
 ### 2. Auditing, Not Execution Intervention
 State Guard is a passive diagnostic auditor, not an execution sandbox or active manager:

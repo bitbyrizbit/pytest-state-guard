@@ -151,10 +151,11 @@ def test_background_worker_fixed():
 
 In concurrent systems, an executor is merely an execution mechanism—often a shared, long-lived resource configured across multiple tests or fixtures. The entity responsible for the existence and lifetime of a task is the submitter.
 
-State Guard establishes ownership through two primary scopes:
+State Guard establishes ownership through three lifecycle scopes:
 
-1. **Test Call Owners:** Bound to the test item during its `pytest_runtest_call` phase and finalized by the `pytest_runtest_teardown` hookwrapper after teardown processing (including fixture teardown finalizers).
-2. **Fixture Owners:** Bound to fixture invocations during `pytest_fixture_setup` across all fixture scopes (`function`, `class`, `module`, `package`, and `session`), and finalized through `pytest_fixture_post_finalizer` after that fixture's teardown logic has completed. State Guard does not track arbitrary teardown code beyond this hook-defined boundary.
+1. **Test Call Owners (`TEST_CALL`):** Bound to the test item during its `pytest_runtest_call` phase and finalized by the `pytest_runtest_teardown` hookwrapper after teardown processing (including fixture teardown finalizers).
+2. **Fixture Setup Owners (`FIXTURE_SETUP`):** Bound during `pytest_fixture_setup` across all fixture scopes (`function`, `class`, `module`, `package`, and `session`), and finalized through `pytest_fixture_post_finalizer` after that fixture's teardown logic has completed.
+3. **Fixture Teardown Owners (`FIXTURE_TEARDOWN`):** Bound during fixture finalizer and post-yield execution intercepted via the `FixtureDef.finish` dispatcher, and finalized upon teardown conclusion. State Guard verifies that teardown dispatch was not bypassed by non-delegating plugins (SCEN-10).
 
 Ownership is propagated via context-local storage (`contextvars.ContextVar`). When a test or fixture calls `executor.submit(fn, *args, **kwargs)`, State Guard captures the active owner ID, issues a UUID for the task, and commits a submission reservation event before delegating to the real executor.
 

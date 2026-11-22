@@ -139,15 +139,16 @@ def test_background_producer():
 ### Scenario 4: Work Submitted from Fixture Setup vs. Fixture Teardown
 
 #### The Scenario
-A test passes cleanly, but background work is submitted during fixture teardown.
+A test passes cleanly, but background work submitted during fixture teardown is unjoined or leaks across test boundaries.
 
 #### Why State Guard Behaves This Way
 - **Fixture Setup Ownership:** Tasks submitted while the fixture's setup phase is active (before `yield`) are attributed to that fixture's `FIXTURE_SETUP` owner.
-- **Fixture Teardown:** The code executing *after* `yield` in a generator fixture (or registered via `request.addfinalizer`) executes outside the setup owner context.
-- State Guard does not track fixture teardown execution as an owner scope. Any submission during teardown has no active owner and passes through uninstrumented.
+- **Fixture Teardown Ownership:** The code executing *after* `yield` in a generator fixture (or registered via `request.addfinalizer`) executes outside the setup owner context. Instead, State Guard activates a separate, dedicated `OwnerType.FIXTURE_TEARDOWN` owner via its `FixtureDef.finish` dispatcher.
+- **Teardown Lifecycle Audit:** Tasks submitted during teardown are bound to that teardown owner and evaluated against the teardown finalization boundary ($S_F$). If background work is dispatched during teardown and not joined before the teardown block concludes, State Guard flags the task as a teardown concurrency violation (e.g., `CALLABLE_NOT_EXITED` or `OUTSTANDING_TASK`).
+- **Non-Delegating Plugin Replacements:** If an external plugin replaces `FixtureDef.finish` with a wrapper that fails to delegate, State Guard cannot instrument teardown submissions directly. Instead, State Guard detects this bypass during `pytest_fixture_post_finalizer` (SCEN-10) and promotes the session exit code to `TESTS_FAILED` with an incomplete audit warning.
 
 #### Safe Pattern for Fixture Authors
-Never dispatch detached background work in fixture teardown. If teardown needs to perform asynchronous cleanup, wait for all work to complete before the teardown block finishes:
+Never dispatch unjoined background work in fixture teardown. If teardown needs to perform asynchronous cleanup or thread pool shutdown, wait for all work to complete before the teardown block finishes:
 
 ```python
 import pytest

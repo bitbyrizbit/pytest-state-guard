@@ -8,40 +8,43 @@ This guide describes how `pytest-state-guard` models task ownership across pytes
 
 In concurrent systems, an executor is an execution engine—often a shared, long-lived resource configured across multiple fixtures or tests. The entity responsible for a task's existence and lifecycle boundary is the **submitter**, not the executor.
 
-State Guard establishes ownership through two primary scopes:
+State Guard establishes ownership through three distinct scopes:
 
 ```mermaid
 flowchart TD
     subgraph TestLifecycle["Test Call Lifecycle"]
         TC_Start["pytest_runtest_call begins<br>OwnerContext(TEST_CALL) active"] --> TC_Body["Test function executes<br>executor.submit() captures TEST_CALL"]
         TC_Body --> TC_End["Test function returns/raises"]
-        TC_End --> TC_Finalize["Owner finalized: S_F committed<br>PolicyEngine audits tasks"]
-        TC_Finalize --> TC_Teardown["pytest_runtest_teardown hook<br>Surfaces ERRORS if violations exist"]
+        TC_End --> TC_Teardown["pytest_runtest_teardown hook<br>Runs test & fixture teardowns"]
+        TC_Teardown --> TC_Finalize["Owner finalized: S_F committed"]
+        TC_Finalize --> TC_Report["pytest_runtest_makereport (teardown)<br>Surfaces ERRORS if violations exist"]
     end
 
-    subgraph FixtureLifecycle["Fixture Setup Lifecycle"]
+    subgraph FixtureLifecycle["Fixture Lifecycle"]
         FX_Start["pytest_fixture_setup begins<br>OwnerContext(FIXTURE_SETUP) active"] --> FX_Body["Fixture setup executes<br>executor.submit() captures FIXTURE_SETUP"]
-        FX_Body --> FX_Yield["Fixture yields value to test<br>OwnerContext reset"]
+        FX_Body --> FX_Yield["Fixture yields value to test<br>Setup OwnerContext reset"]
         FX_Yield --> FX_Wait["Test execution occurs..."]
-        FX_Wait --> FX_Teardown["Fixture teardown executes<br>(No fixture-setup owner active)"]
-        FX_Teardown --> FX_Finalize["pytest_fixture_post_finalizer<br>Owner finalized: S_F committed"]
+        FX_Wait --> FX_Teardown["FixtureDef.finish dispatcher begins<br>OwnerContext(FIXTURE_TEARDOWN) active"]
+        FX_Teardown --> FX_TearBody["Fixture teardown executes<br>executor.submit() captures FIXTURE_TEARDOWN"]
+        FX_TearBody --> FX_TearFin["Teardown owner finalized: S_F committed"]
+        FX_TearFin --> FX_Finalize["pytest_fixture_post_finalizer<br>Setup owner finalized: S_F committed"]
     end
 ```
 
 ### 1. Test Call Ownership (`TEST_CALL`)
 - **Boundary:** Begins when `pytest_runtest_call` invokes the test function and ends when the test function returns or raises.
 - **Attribution:** Any callable submitted to a `ThreadPoolExecutor` while the test function is running is bound to that test item's `TEST_CALL` owner.
-- **Finalization:** The owner is finalized immediately following the call phase. State Guard audits all tasks submitted by the test function against this finalization boundary.
+- **Finalization:** The owner is finalized in `pytest_runtest_teardown` after test execution and associated fixture finalizers conclude. State Guard audits all tasks submitted by the test function against this finalization boundary.
 
 ### 2. Fixture Setup Ownership (`FIXTURE_SETUP`)
 - **Boundary:** Begins when `pytest_fixture_setup` begins executing the fixture and ends when setup returns or yields.
 - **Attribution:** Tasks submitted during fixture setup are bound to that fixture's `FIXTURE_SETUP` owner across all fixture scopes (`function`, `class`, `module`, `package`, `session`).
 - **Finalization:** Finalized in `pytest_fixture_post_finalizer` after that fixture's teardown logic has completed.
 
-### 3. The Fixture Teardown Boundary
-> **Critical Rule:** Fixture teardown and finalizer execution do **not** have a fixture-setup owner. State Guard does not attribute submissions during teardown to the completed fixture-setup owner.
->
-> If a fixture finalizer or code after a `yield` statement submits new work to an executor, that submission occurs outside the fixture setup context. Ensure fixture teardowns do not dispatch detached background work.
+### 3. Fixture Teardown Ownership (`FIXTURE_TEARDOWN`)
+- **Distinct Ownership Boundary:** Fixture teardown and finalizers do **not** run under the completed `FIXTURE_SETUP` owner. Instead, State Guard intercepts `FixtureDef.finish` using a dynamic dispatcher, activating a dedicated `OwnerType.FIXTURE_TEARDOWN` owner for the duration of user finalizer and post-yield execution.
+- **Teardown Task Auditing:** Tasks submitted to an executor during fixture teardown are bound to that fixture's teardown owner. The submitting teardown block must join or wait for all submitted tasks before concluding; any task left executing or queued past the teardown finalization boundary is flagged as a concurrency violation.
+- **Instrumentation Bypass Safeguards:** If a third-party plugin replaces `FixtureDef.finish` with a non-delegating wrapper, State Guard cannot instrument teardown submissions directly. Instead, State Guard detects this bypass during `pytest_fixture_post_finalizer` (SCEN-10), records an operational degradation, and promotes the session exit code to `TESTS_FAILED` during session audit to prevent unmonitored execution from passing silently.
 
 ---
 

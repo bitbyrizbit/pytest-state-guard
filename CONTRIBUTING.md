@@ -99,5 +99,5 @@ Documentation is built using MkDocs with the Material theme.
 3. **Core Distinctions:** When modifying or testing policy behavior, preserve the core distinctions:
    - An observed physical event, committed ledger record, and policy finding are distinct concepts.
    - Callable execution and Future settlement are separate lifecycle dimensions.
-   - Fixture teardown execution is not an owner scope.
+   - Fixture setup ownership (`OwnerType.FIXTURE_SETUP`) and fixture teardown ownership (`OwnerType.FIXTURE_TEARDOWN`) are distinct owner scopes.
 4. **Documentation:** Update documentation if your contribution impacts user-facing behavior. Verify that `mkdocs build --strict` succeeds without warnings.

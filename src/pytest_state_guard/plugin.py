@@ -576,7 +576,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
 
 def _evaluate_and_cleanup_session_finish(
-    session: pytest.Session, outcome: Any, state: SessionState
+    session: pytest.Session, outcome: Any, state: StateGuardSession
 ) -> None:
     """Internal helper executing post-yield audit, exit status update, and cleanup.
 

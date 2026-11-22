@@ -5,6 +5,23 @@ All notable changes to pytest-state-guard will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Fixture Teardown Lifecycle Tracking (Stage 15B):**
+  - Added `OwnerType.FIXTURE_TEARDOWN` for distinct ownership tracking during fixture finalizer and post-yield execution.
+  - Implemented dynamic `FixtureDef.finish` dispatcher (`_state_guard_fixture_finish`) with structured 5-phase lifecycle: entry registration, instance resolution and depth tracking, owner activation, teardown execution, and deterministic cleanup.
+  - Added safe `ContextVar` context restoration across nested and sequential fixture finish invocations.
+  - Added detection of non-delegating plugin replacements (SCEN-10) via `bypassed_fixtures` registry, promoting session exit status to `pytest.ExitCode.TESTS_FAILED` during session finish audit.
+  - Added deterministic, aggregated incomplete audit diagnostics in session finish reporting.
+  - Introduced core fixture teardown test suite (34 tests in `tests/integration/test_fixture_teardown.py`) covering standard scopes, cyclic dependencies, fault injections, and subprocess isolation.
+  - Introduced adversarial fixture teardown test suite (35 tests in `tests/integration/test_fixture_teardown_adversarial.py`) validating dispatcher races, ContextVar isolation, premature sentinel consumption, and multi-definition counting.
+  - Integrated documentation favicon assets across standard and high-DPI resolutions.
+
+### Fixed
+- Fixed undefined `SessionState` type annotation on `_evaluate_and_cleanup_session_finish` in `src/pytest_state_guard/plugin.py`, correcting runtime reflection (`typing.get_type_hints()`).
+- Reconciled architecture and user guide documentation to accurately reflect `OwnerType.FIXTURE_TEARDOWN` and `TEST_CALL` finalization in `pytest_runtest_teardown`.
+
 ## [0.1.1] - 2026-11-18
 
 ### Changed
