@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **High-Level Executor API Integration Coverage (Stage 16C):**
+  - Added dedicated integration test suite in `tests/integration/test_executor_high_level_api.py` covering `ThreadPoolExecutor.map()` (fully consumed tasks, partially consumed live iterators with controlled running vs. queued states, and callable exception lifecycle accounting).
+  - Added integration tests covering `ThreadPoolExecutor.shutdown(cancel_futures=True)` under non-waiting (`wait=False`, verifying detection of leaked running tasks) and waiting (`wait=True`, verifying clean settlement of running and cancelled tasks) modes using deterministic `threading.Event` synchronization.
 - **Fixture Teardown Lifecycle Tracking (Stage 15B):**
   - Added `OwnerType.FIXTURE_TEARDOWN` for distinct ownership tracking during fixture finalizer and post-yield execution.
   - Implemented dynamic `FixtureDef.finish` dispatcher (`_state_guard_fixture_finish`) with structured 5-phase lifecycle: entry registration, instance resolution and depth tracking, owner activation, teardown execution, and deterministic cleanup.
