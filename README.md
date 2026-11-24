@@ -86,7 +86,7 @@ Running `pytest` against this test demonstrates how State Guard surfaces the bou
 ```text
 ============================= test session starts =============================
 platform ... -- Python 3.x, pytest-9.x, pluggy-1.x
-plugins: state-guard-0.1.1
+plugins: state-guard-1.0.0
 collected 1 item
 
 test_demo.py::test_background_worker PASSED                              [100%]
@@ -218,10 +218,10 @@ If all test assertions passed but State Guard detected concurrency violations, t
 ## Compatibility & Verification
 
 - **Python Requirements:** `>= 3.11`
-  - *Verified Matrix Environments:* Python 3.11, Python 3.12, Python 3.13, and Python 3.14 across Ubuntu (Linux), Windows, and macOS (verified in [CI Run 44079270152](https://github.com/bitbyrizbit/pytest-state-guard/actions/runs/44079270152))
+  - *Verified Matrix Environments:* Python 3.11, Python 3.12, Python 3.13, and Python 3.14 across Ubuntu (Linux), Windows, and macOS (verified in [CI Matrix](https://github.com/bitbyrizbit/pytest-state-guard/actions/workflows/ci.yml))
 - **Pytest Requirements:** `>= 9.1.1` (direct runtime dependency)
   - *Verified Environments:* pytest 9.1.1, pytest 9.2.0
-- **Pluggy Requirements:** `>= 1.5.0` (transitive dependency via pytest)
+- **Pluggy Requirements:** `>= 1.5.0` (transitive dependency automatically managed through pytest; no separate user installation required)
   - *Verified Environments:* pluggy 1.5.0, pluggy 1.6.0, pluggy 1.7.0
 
 ---
