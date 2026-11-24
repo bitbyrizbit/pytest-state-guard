@@ -2,8 +2,8 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/pytest-state-guard.svg)](https://pypi.org/project/pytest-state-guard/)
 [![CI](https://github.com/bitbyrizbit/pytest-state-guard/actions/workflows/ci.yml/badge.svg?branch=feat/state-guard-v1)](https://github.com/bitbyrizbit/pytest-state-guard/actions/workflows/ci.yml)
-[![Python Versions](https://img.shields.io/pypi/pyversions/pytest-state-guard.svg)](https://pypi.org/project/pytest-state-guard/)
-[![License: MIT](https://img.shields.io/pypi/l/pytest-state-guard.svg)](https://github.com/bitbyrizbit/pytest-state-guard/blob/feat/state-guard-v1/LICENSE)
+[![Python Versions](https://img.shields.io/badge/Python-3.11%2B-blue)](https://pypi.org/project/pytest-state-guard/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 A pytest plugin auditing `ThreadPoolExecutor` task lifetimes against fixture and test owner boundaries.
 
@@ -137,7 +137,7 @@ def test_background_worker_fixed():
 - **Instruments Task Submission:** Intercepts `ThreadPoolExecutor.submit` dynamically during the pytest session to bind task provenance to the active owner context.
 - **Enforces Monotonic Ordering:** Commits every observed, tracked submission, start, exit, and finalization event to a thread-safe, append-only in-memory ledger.
 - **Classifies Against Boundaries:** Evaluates whether submitted callables completed before their submitter was finalized, remained outstanding, or started execution after owner teardown.
-- **Surfaces Failures Without Masking:** Reports violations in test teardowns (`=== ERRORS ===`) and the session summary without overwriting original call assertions (`=== FAILURES ===`) or swallowing upstream exceptions.
+- **Preserves Test and Application Failures:** Reports concurrency violations without overwriting original call-phase assertions or upstream exceptions. Instrumentation failures are suppressed only at explicitly defined fail-open boundaries. Failures outside those boundaries may propagate or cause the session to report incomplete instrumentation.
 
 ### What State Guard Deliberately Does Not Do
 - **It does not terminate threads:** State Guard is an auditor, not an execution sandbox. It will not forcibly kill threads, cancel running callables, or shut down executors.
@@ -221,7 +221,7 @@ If all test assertions passed but State Guard detected concurrency violations, t
   - *Verified Matrix Environments:* Python 3.11, Python 3.12, Python 3.13, and Python 3.14 across Ubuntu (Linux), Windows, and macOS (verified in [CI Matrix](https://github.com/bitbyrizbit/pytest-state-guard/actions/workflows/ci.yml))
 - **Pytest Requirements:** `>= 9.1.1` (direct runtime dependency)
   - *Verified Environments:* pytest 9.1.1, pytest 9.2.0
-- **Pluggy Requirements:** `>= 1.5.0` (transitive dependency automatically managed through pytest; no separate user installation required)
+- **Pluggy:** Installed transitively through pytest; no separate installation required.
   - *Verified Environments:* pluggy 1.5.0, pluggy 1.6.0, pluggy 1.7.0
 
 ---
